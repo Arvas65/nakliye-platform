@@ -1,0 +1,656 @@
+// =====================================================
+// Nakliye Platformu — Prisma Schema
+// Sürüm: 2.0
+// PostgreSQL 16 + PostGIS
+// =====================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions", "fullTextSearch"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [postgis, uuidOssp(map: "uuid-ossp"), pgTrgm(map: "pg_trgm")]
+}
+
+// =====================================================
+// USER & AUTH
+// =====================================================
+
+enum UserRole {
+  CARGO_OWNER   // yük sahibi
+  TRANSPORTER   // nakliyeci
+  ADMIN
+}
+
+enum KycStatus {
+  NOT_STARTED
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+model User {
+  id              String         @id @default(uuid()) @db.Uuid
+  email           String         @unique
+  phone           String?        @unique
+  passwordHash    String
+  role            UserRole
+  firstName       String
+  lastName        String
+  avatarUrl       String?
+  status          AccountStatus  @default(ACTIVE)
+  emailVerifiedAt DateTime?
+  phoneVerifiedAt DateTime?
+  kycStatus       KycStatus      @default(NOT_STARTED)
+  twoFactorEnabled Boolean       @default(false)
+  twoFactorSecret String?
+  lastLoginAt     DateTime?
+  lastLoginIp     String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  deletedAt       DateTime?
+
+  // İlişkiler
+  profile             UserProfile?
+  refreshTokens       RefreshToken[]
+  oauthAccounts       OAuthAccount[]
+  vehicles            Vehicle[]
+  cargoPosts          CargoPost[]     @relation("CargoOwner")
+  offers              Offer[]         @relation("Transporter")
+  shipmentsAsOwner    Shipment[]      @relation("ShipmentOwner")
+  shipmentsAsCarrier  Shipment[]      @relation("ShipmentCarrier")
+  reviewsGiven        Review[]        @relation("Rater")
+  reviewsReceived     Review[]        @relation("Ratee")
+  conversations       ConversationParticipant[]
+  messages            Message[]
+  notifications       Notification[]
+  payments            Payment[]
+  paymentMethods      PaymentMethod[]
+  pushTokens          PushToken[]
+  auditLogs           AuditLog[]
+
+  @@index([role, status])
+  @@index([createdAt])
+  @@map("users")
+}
+
+model UserProfile {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @unique @db.Uuid
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  companyName     String?
+  taxNumber       String?
+  taxOffice       String?
+  identityNumber  String?  // TCKN (encrypted at app layer)
+  address         String?
+  city            String?
+  district        String?
+  postalCode      String?
+  countryCode     String   @default("TR")
+
+  // Nakliyeciye özel
+  driverLicenseNo String?
+  driverLicenseClass String?
+  yearsOfExperience Int?
+
+  bio             String?  @db.Text
+  websiteUrl      String?
+
+  // Coğrafi (servis bölgesi)
+  serviceAreaGeoJson Json?
+
+  // Puanlama özetleri (denormalize)
+  averageRating   Float    @default(0)
+  reviewCount     Int      @default(0)
+  completedJobs   Int      @default(0)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("user_profiles")
+}
+
+model RefreshToken {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash   String   @unique
+  userAgent   String?
+  ipAddress   String?
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  replacedById String? @db.Uuid
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+enum OAuthProvider {
+  GOOGLE
+  APPLE
+  FACEBOOK
+}
+
+model OAuthAccount {
+  id           String        @id @default(uuid()) @db.Uuid
+  userId       String        @db.Uuid
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider     OAuthProvider
+  providerId   String
+  accessToken  String?       @db.Text
+  refreshToken String?       @db.Text
+  expiresAt    DateTime?
+  createdAt    DateTime      @default(now())
+
+  @@unique([provider, providerId])
+  @@index([userId])
+  @@map("oauth_accounts")
+}
+
+// =====================================================
+// VEHICLES (Nakliyeciye ait)
+// =====================================================
+
+enum VehicleType {
+  VAN           // panelvan / kamyonet
+  TRUCK_SMALL   // küçük kamyon
+  TRUCK_MEDIUM  // orta kamyon
+  TRUCK_LARGE   // büyük kamyon / TIR
+  SEMI_TRAILER  // çekici + dorse
+  REFRIGERATED  // frigorifik
+  TANKER        // tanker
+  CONTAINER     // konteyner taşıyıcı
+  FLATBED       // açık kasa
+  OTHER
+}
+
+model Vehicle {
+  id              String       @id @default(uuid()) @db.Uuid
+  ownerId         String       @db.Uuid
+  owner           User         @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  plateNumber     String
+  type            VehicleType
+  brand           String?
+  model           String?
+  year            Int?
+  capacityKg      Int          // ton x 1000
+  volumeM3        Float?
+  hasGps          Boolean      @default(false)
+  hasInsurance    Boolean      @default(false)
+  insuranceExpiry DateTime?
+  inspectionExpiry DateTime?
+  photos          String[]     @default([])
+  isActive        Boolean      @default(true)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  shipments       Shipment[]
+
+  @@unique([ownerId, plateNumber])
+  @@index([type, isActive])
+  @@map("vehicles")
+}
+
+// =====================================================
+// CARGO POST (Yük İlanı)
+// =====================================================
+
+enum CargoType {
+  GENERAL          // genel
+  PALLETIZED       // paletli
+  FRAGILE          // kırılgan
+  PERISHABLE       // bozulabilir / gıda
+  REFRIGERATED     // soğuk
+  HAZARDOUS        // tehlikeli madde
+  OVERSIZED        // gabari dışı
+  LIVE_ANIMAL      // canlı hayvan
+  VEHICLE          // araç taşıma
+  CONTAINER        // konteyner
+  OTHER
+}
+
+enum CargoStatus {
+  DRAFT
+  OPEN          // teklif kabul ediyor
+  MATCHED       // teklif kabul edildi, taşıma bekleniyor
+  IN_TRANSIT    // taşımada
+  DELIVERED     // teslim edildi
+  COMPLETED     // ödeme + puanlama tamam
+  CANCELLED
+  EXPIRED
+}
+
+model CargoPost {
+  id                String       @id @default(uuid()) @db.Uuid
+  ownerId           String       @db.Uuid
+  owner             User         @relation("CargoOwner", fields: [ownerId], references: [id])
+  title             String
+  description       String       @db.Text
+  cargoType         CargoType
+  vehicleTypeRequired VehicleType?
+
+  // Yük detayı
+  weightKg          Int
+  volumeM3          Float?
+  itemCount         Int?
+
+  // Pickup
+  pickupAddress     String
+  pickupCity        String
+  pickupDistrict    String?
+  pickupCountry     String       @default("TR")
+  pickupLat         Float
+  pickupLng         Float
+  pickupDate        DateTime
+  pickupTimeWindow  String?      // "09:00-18:00"
+
+  // Dropoff
+  dropoffAddress    String
+  dropoffCity       String
+  dropoffDistrict   String?
+  dropoffCountry    String       @default("TR")
+  dropoffLat        Float
+  dropoffLng        Float
+  dropoffDate       DateTime?
+  dropoffTimeWindow String?
+
+  // Hesaplanan
+  distanceKm        Float?
+  durationMinutes   Int?
+
+  // Fiyat
+  budget            Decimal      @db.Decimal(12, 2)
+  suggestedPrice    Decimal?     @db.Decimal(12, 2)
+  currency          String       @default("TRY")
+  isNegotiable      Boolean      @default(true)
+
+  // Durum
+  status            CargoStatus  @default(OPEN)
+  expiresAt         DateTime?
+  acceptedOfferId   String?      @unique @db.Uuid
+
+  // Görsel
+  photos            String[]     @default([])
+
+  // Meta
+  viewCount         Int          @default(0)
+  offerCount        Int          @default(0)
+
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  cancelledAt       DateTime?
+
+  offers            Offer[]
+  shipment          Shipment?
+
+  @@index([status, pickupDate])
+  @@index([pickupCity, dropoffCity])
+  @@index([ownerId])
+  @@index([cargoType])
+  @@map("cargo_posts")
+}
+
+// =====================================================
+// OFFER (Teklif)
+// =====================================================
+
+enum OfferStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  WITHDRAWN
+  EXPIRED
+}
+
+model Offer {
+  id              String       @id @default(uuid()) @db.Uuid
+  cargoPostId     String       @db.Uuid
+  cargoPost       CargoPost    @relation(fields: [cargoPostId], references: [id], onDelete: Cascade)
+  transporterId   String       @db.Uuid
+  transporter     User         @relation("Transporter", fields: [transporterId], references: [id])
+  vehicleId       String?      @db.Uuid
+
+  amount          Decimal      @db.Decimal(12, 2)
+  currency        String       @default("TRY")
+  message         String?      @db.Text
+  etaPickupAt     DateTime?
+  etaDeliveryAt   DateTime?
+  validUntil      DateTime?
+
+  status          OfferStatus  @default(PENDING)
+  respondedAt     DateTime?
+
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@unique([cargoPostId, transporterId])
+  @@index([transporterId, status])
+  @@index([status])
+  @@map("offers")
+}
+
+// =====================================================
+// SHIPMENT (Kabul edilen teklif sonrası — taşıma süreci)
+// =====================================================
+
+enum ShipmentStatus {
+  SCHEDULED
+  EN_ROUTE_PICKUP
+  PICKED_UP
+  IN_TRANSIT
+  ARRIVED_DROPOFF
+  DELIVERED
+  CANCELLED
+  DISPUTED
+}
+
+model Shipment {
+  id              String          @id @default(uuid()) @db.Uuid
+  cargoPostId     String          @unique @db.Uuid
+  cargoPost       CargoPost       @relation(fields: [cargoPostId], references: [id])
+  ownerId         String          @db.Uuid
+  owner           User            @relation("ShipmentOwner", fields: [ownerId], references: [id])
+  carrierId       String          @db.Uuid
+  carrier         User            @relation("ShipmentCarrier", fields: [carrierId], references: [id])
+  vehicleId       String?         @db.Uuid
+  vehicle         Vehicle?        @relation(fields: [vehicleId], references: [id])
+
+  status          ShipmentStatus  @default(SCHEDULED)
+  pickedUpAt      DateTime?
+  deliveredAt     DateTime?
+  cancelledAt     DateTime?
+  cancellationReason String?
+
+  // Belgeler
+  documents       ShipmentDocument[]
+
+  // GPS izleme
+  trackingPoints  TrackingPoint[]
+
+  // Ödeme
+  payment         Payment?
+
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([carrierId, status])
+  @@index([ownerId, status])
+  @@map("shipments")
+}
+
+enum DocumentType {
+  CMR
+  INVOICE
+  PROOF_OF_DELIVERY
+  PHOTO_PICKUP
+  PHOTO_DELIVERY
+  OTHER
+}
+
+model ShipmentDocument {
+  id          String       @id @default(uuid()) @db.Uuid
+  shipmentId  String       @db.Uuid
+  shipment    Shipment     @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  type        DocumentType
+  url         String
+  fileName    String?
+  fileSize    Int?
+  mimeType    String?
+  uploadedBy  String       @db.Uuid
+  createdAt   DateTime     @default(now())
+
+  @@index([shipmentId])
+  @@map("shipment_documents")
+}
+
+model TrackingPoint {
+  id          String   @id @default(uuid()) @db.Uuid
+  shipmentId  String   @db.Uuid
+  shipment    Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  lat         Float
+  lng         Float
+  speedKmh    Float?
+  heading     Float?
+  accuracy    Float?
+  recordedAt  DateTime
+
+  @@index([shipmentId, recordedAt])
+  @@map("tracking_points")
+}
+
+// =====================================================
+// REVIEW (Puanlama)
+// =====================================================
+
+model Review {
+  id          String   @id @default(uuid()) @db.Uuid
+  raterId     String   @db.Uuid
+  rater       User     @relation("Rater", fields: [raterId], references: [id])
+  rateeId     String   @db.Uuid
+  ratee       User     @relation("Ratee", fields: [rateeId], references: [id])
+  shipmentId  String   @db.Uuid
+  rating      Int      // 1-5
+  comment     String?  @db.Text
+  tags        String[] @default([])
+  isVisible   Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  @@unique([raterId, shipmentId])
+  @@index([rateeId])
+  @@map("reviews")
+}
+
+// =====================================================
+// CHAT
+// =====================================================
+
+model Conversation {
+  id            String                    @id @default(uuid()) @db.Uuid
+  cargoPostId   String?                   @db.Uuid
+  shipmentId    String?                   @db.Uuid
+  lastMessageAt DateTime?
+  createdAt     DateTime                  @default(now())
+
+  participants  ConversationParticipant[]
+  messages      Message[]
+
+  @@index([lastMessageAt])
+  @@map("conversations")
+}
+
+model ConversationParticipant {
+  conversationId String       @db.Uuid
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId         String       @db.Uuid
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lastReadAt     DateTime?
+  joinedAt       DateTime     @default(now())
+
+  @@id([conversationId, userId])
+  @@map("conversation_participants")
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  FILE
+  LOCATION
+  SYSTEM
+}
+
+model Message {
+  id             String       @id @default(uuid()) @db.Uuid
+  conversationId String       @db.Uuid
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId       String       @db.Uuid
+  sender         User         @relation(fields: [senderId], references: [id])
+  type           MessageType  @default(TEXT)
+  content        String       @db.Text
+  metadata       Json?
+  deletedAt      DateTime?
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
+  @@index([senderId])
+  @@map("messages")
+}
+
+// =====================================================
+// NOTIFICATIONS
+// =====================================================
+
+enum NotificationType {
+  NEW_OFFER
+  OFFER_ACCEPTED
+  OFFER_REJECTED
+  NEW_MESSAGE
+  SHIPMENT_STATUS_CHANGED
+  PAYMENT_RECEIVED
+  PAYMENT_RELEASED
+  REVIEW_RECEIVED
+  KYC_APPROVED
+  KYC_REJECTED
+  SYSTEM
+}
+
+model Notification {
+  id        String           @id @default(uuid()) @db.Uuid
+  userId    String           @db.Uuid
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  title     String
+  body      String           @db.Text
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
+enum PushPlatform {
+  IOS
+  ANDROID
+  WEB
+}
+
+model PushToken {
+  id        String       @id @default(uuid()) @db.Uuid
+  userId    String       @db.Uuid
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String       @unique
+  platform  PushPlatform
+  isActive  Boolean      @default(true)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@index([userId, isActive])
+  @@map("push_tokens")
+}
+
+// =====================================================
+// PAYMENTS (Stripe Escrow)
+// =====================================================
+
+enum PaymentStatus {
+  PENDING
+  AUTHORIZED       // hold edildi
+  CAPTURED         // tahsil edildi (escrow)
+  RELEASED         // nakliyeciye gönderildi
+  REFUNDED
+  FAILED
+  DISPUTED
+}
+
+model Payment {
+  id                    String         @id @default(uuid()) @db.Uuid
+  shipmentId            String         @unique @db.Uuid
+  shipment              Shipment       @relation(fields: [shipmentId], references: [id])
+  payerId               String         @db.Uuid
+  payer                 User           @relation(fields: [payerId], references: [id])
+
+  amount                Decimal        @db.Decimal(12, 2)
+  platformFee           Decimal        @db.Decimal(12, 2)
+  carrierAmount         Decimal        @db.Decimal(12, 2)
+  currency              String         @default("TRY")
+
+  status                PaymentStatus  @default(PENDING)
+
+  stripePaymentIntentId String?        @unique
+  stripeChargeId        String?
+  stripeTransferId      String?
+
+  authorizedAt          DateTime?
+  capturedAt            DateTime?
+  releasedAt            DateTime?
+  refundedAt            DateTime?
+
+  metadata              Json?
+
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+
+  @@index([payerId])
+  @@index([status])
+  @@map("payments")
+}
+
+model PaymentMethod {
+  id                   String   @id @default(uuid()) @db.Uuid
+  userId               String   @db.Uuid
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stripePaymentMethodId String  @unique
+  brand                String?  // visa, mastercard
+  last4                String?
+  expMonth             Int?
+  expYear              Int?
+  isDefault            Boolean  @default(false)
+  createdAt            DateTime @default(now())
+
+  @@index([userId])
+  @@map("payment_methods")
+}
+
+// =====================================================
+// AUDIT & SYSTEM
+// =====================================================
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String?  @db.Uuid
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String   // "USER_LOGIN", "CARGO_CREATE", "PAYMENT_RELEASE" vs
+  entityType String?  // "User", "CargoPost", "Payment"
+  entityId   String?  @db.Uuid
+  ipAddress  String?
+  userAgent  String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([entityType, entityId])
+  @@index([action])
+  @@map("audit_logs")
+}
+
+model SystemConfig {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+  updatedBy String?  @db.Uuid
+
+  @@map("system_config")
+}

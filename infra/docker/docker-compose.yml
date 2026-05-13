@@ -1,0 +1,71 @@
+version: '3.9'
+
+# Geliştirme ortamı — local makinede çalıştırmak için
+# Kullanım:
+#   pnpm db:up       # Postgres + Redis aç
+#   pnpm db:down     # Hepsini durdur
+#   pnpm db:studio   # Prisma Studio
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: nakliye-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nakliye
+      POSTGRES_PASSWORD: nakliye_dev
+      POSTGRES_DB: nakliye
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U nakliye -d nakliye']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: nakliye-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: nakliye-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@nakliye.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - '5050:80'
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: nakliye-mailhog
+    restart: unless-stopped
+    ports:
+      - '1025:1025' # SMTP
+      - '8025:8025' # Web UI
+
+volumes:
+  postgres_data:
+  redis_data:
+  pgadmin_data:

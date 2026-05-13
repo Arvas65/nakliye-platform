@@ -1,0 +1,19 @@
+# Tüm metin dosyalarını LF olarak normalize et — Windows ↔ Linux uyumu
+* text=auto eol=lf
+
+# Shell scriptler ve husky hook'ları kesin LF olmalı (bash uyumluluğu)
+*.sh        text eol=lf
+.husky/*    text eol=lf
+
+# Binary
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.pdf       binary
+*.zip       binary
+*.gz        binary
+
+# pnpm-lock.yaml ortak — merge conflict azalt
+pnpm-lock.yaml -diff merge=binary
