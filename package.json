@@ -22,6 +22,11 @@
     "db:migrate": "pnpm --filter @nakliye/api prisma:migrate",
     "db:studio": "pnpm --filter @nakliye/api prisma:studio",
     "db:seed": "pnpm --filter @nakliye/api prisma:seed",
+    "db:reset": "docker compose -f infra/docker/docker-compose.yml down -v && pnpm db:up",
+    "setup": "pnpm install && pnpm db:up && timeout /t 5 && pnpm db:migrate && pnpm db:seed",
+    "reset": "pnpm db:reset && timeout /t 5 && pnpm db:migrate && pnpm db:seed",
+    "fresh": "pnpm clean && pnpm setup",
+    "smoke": "node scripts/smoke-test.mjs",
     "prepare": "husky"
   },
   "devDependencies": {
