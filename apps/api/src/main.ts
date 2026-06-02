@@ -74,10 +74,12 @@ async function bootstrap() {
   // Graceful shutdown
   app.enableShutdownHooks();
 
-  const port = Number(process.env.API_PORT ?? 4000);
-  await app.listen(port);
+  // Railway/Heroku/Render PORT env var'ı verir; lokalde API_PORT kullanırız.
+  // 0.0.0.0 bind — container'larda dış erişim için zorunlu.
+  const port = Number(process.env.PORT ?? process.env.API_PORT ?? 4000);
+  await app.listen(port, '0.0.0.0');
 
-  logger.log(`🚀 Nakliye API çalışıyor: http://localhost:${port}`);
+  logger.log(`🚀 Nakliye API çalışıyor: port ${port}`);
   logger.log(`📘 Swagger docs:        http://localhost:${port}/api/docs`);
 }
 
