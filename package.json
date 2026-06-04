@@ -27,7 +27,7 @@
     "reset": "pnpm db:reset && timeout /t 5 && pnpm db:migrate && pnpm db:seed",
     "fresh": "pnpm clean && pnpm setup",
     "smoke": "node scripts/smoke-test.mjs",
-    "prepare": "husky"
+    "prepare": "node scripts/setup-husky.mjs"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.5.0",
