@@ -6,6 +6,7 @@ FROM node:20-alpine AS base
 RUN apk add --no-cache libc6-compat openssl
 RUN corepack enable
 WORKDIR /app
+ENV HUSKY=0
 
 # ---- Dependencies ----
 FROM base AS deps
@@ -30,6 +31,7 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV API_PORT=4000
+ENV HUSKY=0
 
 # Production deps only
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
