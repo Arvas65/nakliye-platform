@@ -27,7 +27,7 @@
     "reset": "pnpm db:reset && timeout /t 5 && pnpm db:migrate && pnpm db:seed",
     "fresh": "pnpm clean && pnpm setup",
     "smoke": "node scripts/smoke-test.mjs",
-    "prepare": "node scripts/setup-husky.mjs"
+    "prepare": "node -e \"if(!process.env.CI&&!process.env.RAILWAY_ENVIRONMENT&&!process.env.VERCEL&&process.env.NODE_ENV!=='production'){try{require('child_process').execSync('husky',{stdio:'inherit'})}catch{}}\""
   },
   "devDependencies": {
     "@commitlint/cli": "^19.5.0",
